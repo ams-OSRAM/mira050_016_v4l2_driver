@@ -11,6 +11,17 @@ sensor it finds. The device tree overlay tells it which sensor to expect.
 
 ## Installation
 
+### Prerequisites
+
+Install git and the kernel headers for the running kernel, then clone this repository.
+
+```
+sudo apt update
+sudo apt install -y git linux-headers-$(uname -r)
+git clone https://github.com/ams-OSRAM/mira050_016_v4l2_driver.git
+cd mira050_016_v4l2_driver
+```
+
 ### Driver
 
 Compile the driver using the Makefile
