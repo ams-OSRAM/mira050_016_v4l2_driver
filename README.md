@@ -17,47 +17,39 @@ Install git and the kernel headers for the running kernel, then clone this repos
 
 ```
 sudo apt update
-sudo apt install -y git linux-headers-$(uname -r)
+sudo apt install -y git device-tree-compiler linux-headers-$(uname -r)
 git clone https://github.com/ams-OSRAM/mira050_016_v4l2_driver.git
 cd mira050_016_v4l2_driver
 ```
 
-### Driver
+### Driver (recommended: DKMS)
 
-Compile the driver using the Makefile
+With [DKMS](https://github.com/dell/dkms) the driver is rebuilt automatically every time Raspberry Pi OS installs a new kernel, so the camera keeps working after `sudo apt full-upgrade`.
+
+```
+sudo apt install -y dkms
+sudo ./dkms-install.sh
+```
+
+This builds `mira050.ko`, which handles both sensors and installs it under `/lib/modules/<kernel>/updates/dkms/`. Check it with `dkms status`. To remove it again, run `sudo ./dkms-uninstall.sh`.
+
+### Driver (manual build)
+
+Without DKMS you have to repeat these steps after every kernel update.
 
 ```
 make
-```
-
-This builds `mira050.ko`, which handles both sensors. Place it in the kernel modules folder.
-
-```
 sudo mkdir -p /lib/modules/$(uname -r)/updates && sudo cp mira050.ko /lib/modules/$(uname -r)/updates/
-```
-
-Resolve modules dependencies.
-
-```
 sudo depmod -a
 ```
 
 ### Device tree
 
-Compile the device tree overlay matching your sensor from the `dts` folder.
-
-For Mira050:
+Build the device tree overlays (`mira050.dtbo` and `mira016.dtbo`) and copy them to `/boot/firmware/overlays/`:
 
 ```
-cd dts/rpi
-sudo dtc mira050-overlay.dts -o /boot/firmware/overlays/mira050.dtbo
-```
-
-For Mira016:
-
-```
-cd dts/rpi
-sudo dtc mira016-overlay.dts -o /boot/firmware/overlays/mira016.dtbo
+make dtbo
+sudo make install_dtbo
 ```
 
 Set the device tree overlay in your platform. This may differ from platform to platform. Please refer to your platform documentation.

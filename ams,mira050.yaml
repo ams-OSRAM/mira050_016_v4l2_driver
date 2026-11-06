@@ -50,11 +50,9 @@ properties:
       Mira050 only. Treat the sensor as monochrome when its color filter
       cannot be read from OTP. Mira016 is always monochrome.
 
-  orientation:
-    $ref: /schemas/video/video-sensor.yaml#/properties/orientation
+  orientation: true
 
-  rotation:
-    $ref: /schemas/video/video-sensor.yaml#/properties/rotation
+  rotation: true
 
   port:
     $ref: /schemas/graph.yaml#/$defs/port-base
@@ -87,6 +85,7 @@ required:
   - port
 
 allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
   - if:
       properties:
         compatible:
@@ -105,7 +104,7 @@ allOf:
       properties:
         vdd11-supply: false
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |
