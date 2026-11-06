@@ -4796,5 +4796,5 @@ static struct i2c_driver mira016_i2c_driver = {
 module_i2c_driver(mira016_i2c_driver);
 
 MODULE_AUTHOR("Jacopo Mondi <jacopo.mondi@ideasonboard.com>");
-MODULE_DESCRIPTION("ams OSRAM MIRA016 sensor driver");
+MODULE_DESCRIPTION("ams OSRAM Mira050 and Mira016 sensor driver");
 MODULE_LICENSE("GPL");
