@@ -1,5 +1,7 @@
 # ams Mira050 / Mira016 Linux driver
 
+[![CI](https://github.com/ams-OSRAM/mira050_016_v4l2_driver/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ams-OSRAM/mira050_016_v4l2_driver/actions/workflows/ci.yml) [![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
+
 One V4L2 driver for both the **Mira050** and the **Mira016** image sensor.
 The driver reads the chip ID at probe time and configures itself for the
 sensor it finds. The device tree overlay tells it which sensor to expect.
