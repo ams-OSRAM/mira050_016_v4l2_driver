@@ -4,20 +4,23 @@
 $id: http://devicetree.org/schemas/media/i2c/ams,mira050.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: ams 1/11-Inch 0.16 Mpixel CMOS Global Shutter Digital Image Sensor
+title: ams Mira050 and Mira016 CMOS Global Shutter Digital Image Sensors
 
 maintainers:
   - Philippe Baetens <philippe.baetens@ams-osram.com>
 
 description: |-
-  The ams mira050 is a 1/11-inch CMOS active pixel digital image sensor
-  with an active array size of 400H x 400V. It is programmable through
-  an I2C interface. The I2C address is fixed to 0x36.
+  The ams Mira050 (0.5 Mpixel, 576H x 768V active array) and Mira016
+  (0.16 Mpixel, 400H x 400V active array) are CMOS global shutter digital
+  image sensors. Both are programmable through an I2C interface. The I2C
+  address is fixed to 0x36.
   Image data is sent through MIPI CSI-2, using 1 data lane.
 
 properties:
   compatible:
-    const: ams,mira050
+    enum:
+      - ams,mira016
+      - ams,mira050
 
   reg:
     maxItems: 1
@@ -25,14 +28,27 @@ properties:
   clocks:
     maxItems: 1
 
-  vddana-supply:
+  vdd11-supply:
+    description: Digital core supply, 1.1 volts (Mira016 only)
+
+  vdd12-supply:
+    description: Digital core supply, 1.2 volts (Mira050 only)
+
+  vdd18-supply:
+    description: Digital I/O supply, 1.8 volts (Mira050 only)
+
+  vdd28-supply:
     description: Analog supply, 2.8 volts
 
-  vdddig-supply:
-    description: Digital I/O supply, 1.8 volts
+  reset-gpios:
+    description: Reference to the GPIO connected to the reset pin, if any.
+    maxItems: 1
 
-  vddl-supply:
-    description: Digital core supply, 1.2 volts
+  mira,mono:
+    type: boolean
+    description:
+      Mira050 only. Treat the sensor as monochrome when its color filter
+      cannot be read from OTP. Mira016 is always monochrome.
 
   orientation:
     $ref: /schemas/video/video-sensor.yaml#/properties/orientation
@@ -60,16 +76,34 @@ properties:
         required:
           - data-lanes
           - link-frequencies
+          - clock-noncontinuous
           - remote-endpoint
 
 required:
   - compatible
   - reg
   - clocks
-  - vddana-supply
-  - vdddig-supply
-  - vddl-supply
+  - vdd28-supply
   - port
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: ams,mira016
+    then:
+      required:
+        - vdd11-supply
+      properties:
+        vdd12-supply: false
+        vdd18-supply: false
+        mira,mono: false
+    else:
+      required:
+        - vdd12-supply
+        - vdd18-supply
+      properties:
+        vdd11-supply: false
 
 additionalProperties: false
 
@@ -79,20 +113,41 @@ examples:
         #address-cells = <1>;
         #size-cells = <0>;
 
-        mira050: sensor@36 {
+        sensor@36 {
             compatible = "ams,mira050";
             reg = <0x36>;
             clocks = <&mira050_clk>;
-            vddana-supply = <&cam1_reg>;   /* 2.8v */
-            vdddig-supply = <&cam_dummy_reg>;   /* 1.8v */
-            vddl-supply = <&cam_dummy_reg>;   /* 1.2v */
+            vdd28-supply = <&cam1_reg>;         /* 2.8v */
+            vdd18-supply = <&cam_dummy_reg>;    /* 1.8v */
+            vdd12-supply = <&cam_dummy_reg>;    /* 1.2v */
             rotation = <0>;
             orientation = <0>;
 
             port {
-                mira050_0: endpoint {
-                    remote-endpoint = <&csi_ep>; /* Add this here explicitly */
-                    clock-lanes = <0>;
+                endpoint {
+                    remote-endpoint = <&csi_ep>;
+                    data-lanes = <1>;
+                    clock-noncontinuous;
+                    link-frequencies = /bits/ 64 <750000000>;
+                };
+            };
+        };
+    };
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        sensor@36 {
+            compatible = "ams,mira016";
+            reg = <0x36>;
+            clocks = <&mira016_clk>;
+            vdd11-supply = <&cam_dummy_reg>;    /* 1.1v */
+            vdd28-supply = <&cam1_reg>;         /* 2.8v */
+
+            port {
+                endpoint {
+                    remote-endpoint = <&csi_ep>;
                     data-lanes = <1>;
                     clock-noncontinuous;
                     link-frequencies = /bits/ 64 <750000000>;
