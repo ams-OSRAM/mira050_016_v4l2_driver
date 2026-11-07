@@ -141,6 +141,7 @@
 
 /* Fine analogue gain */
 #define MIRA016_GDIG_PREAMP		CCI_REG8(0x0195)
+#define MIRA016_GDIG_PREAMP_UNITY	15
 #define MIRA016_BIAS_RG_ADCGAIN		CCI_REG8(0x01f0)
 #define MIRA016_BIAS_RG_MULT		CCI_REG8(0x01f3)
 
@@ -3873,17 +3874,22 @@ static int mira016_write_analogue_gain(struct mira016 *mira016,
 	}
 
 	/* Program analog gain (for 8 and 10 bits modes only). */
+	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 0, &ret);
 	if (lut) {
-		cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 0, &ret);
-
 		cci_write(mira016->regmap, MIRA016_BIAS_RG_ADCGAIN,
 			  lut->rg_adcgain, &ret);
 		cci_write(mira016->regmap, MIRA016_BIAS_RG_MULT,
 			  lut->rg_mult, &ret);
-		if (bpp == 8)
-			cci_write(mira016->regmap, MIRA016_GDIG_PREAMP,
-				  lut->gdig_preamp, &ret);
 	}
+
+	/*
+	 * Digital preamp: from the LUT in 8-bit mode, 15 (unity) in 10 and
+	 * 12-bit mode. Write it in every mode: the register keeps its value
+	 * across mode switches, and the 8-bit value (3 or 7) caps the 10 and
+	 * 12-bit output well below full scale.
+	 */
+	cci_write(mira016->regmap, MIRA016_GDIG_PREAMP,
+		  lut ? lut->gdig_preamp : MIRA016_GDIG_PREAMP_UNITY, &ret);
 
 	/*
 	 * Adjust black level offset clipping to the new gain value. Offset
