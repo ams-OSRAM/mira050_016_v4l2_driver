@@ -33,7 +33,7 @@
 		target = <&cam1_reg>;
 		cam_reg: __overlay__ {
 			startup-delay-us = <120000>;
-			off-on-delay-us = <40000>;
+			off-on-delay-us = <140000>;	/* sensor needs a full power-down before re-enable (issue #3) */
 		};
 	};
 

@@ -4030,7 +4030,12 @@ static int mira016_power_on(struct device *dev)
 
 	gpiod_set_value_cansleep(mira016->reset_gpio, 0);
 
-	fsleep(500);
+	/*
+	 * Let the sensor start up on the new clock before the init sequence. With
+	 * 500 us it sometimes accepted the configuration but sent no frames after
+	 * a power cycle (issue #3).
+	 */
+	fsleep(10000);
 
 	ret = cci_multi_reg_write(mira016->regmap,
 				 mira016->info->init_sequence.sequence,
@@ -4045,7 +4050,7 @@ static int mira016_power_on(struct device *dev)
 err_clk_disable:
 	clk_disable_unprepare(mira016->xclk);
 err_reset_assert:
-	gpiod_set_value_cansleep(mira016->reset_gpio, 0);
+	gpiod_set_value_cansleep(mira016->reset_gpio, 1);
 err_reg_disable:
 	for (int i = mira016->info->num_supplies - 1; i >= 0; i--)
 		regulator_disable(mira016->supplies[i]);
