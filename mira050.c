@@ -417,13 +417,17 @@ static inline u32 mira016_calc_prate(struct mira016 *mira016, u32 h_tot)
 	 * length (in example the default 400 + 0 HBLANK)
 	 *
 	 * pixel time (psec) = t_row(psec) / 400
-	 * pixel rate (mbps) = 10^12 / pixel_time
+	 * pixel rate (Hz)   = 10^12 / pixel_time
 	 *		     = 10^12 * 400 / t_row
-	 *		     = 400 * 10^6 / t_row * 10^6 to avoid overflows
+	 *
+	 * Computed in 64 bits with a single division: dividing by t_row before
+	 * multiplying by 10^6 truncated the rate to whole MHz (43.87 MHz became
+	 * 43 MHz for the 12-bit mode), so the frame and exposure times derived
+	 * from it in user space were off by ~2% (issue #4).
 	 */
 	u32 trow_psec = mira016_trow_psec(mira016);
 
-	return h_tot * HZ_PER_MHZ / trow_psec * HZ_PER_MHZ;
+	return div_u64((u64)h_tot * HZ_PER_MHZ * HZ_PER_MHZ, trow_psec);
 }
 
 static inline u32 mira016_calc_min_vblank(struct mira016 *mira016,
@@ -4761,11 +4765,15 @@ static void mira016_remove(struct i2c_client *client)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct mira016 *mira016 = to_mira016(sd);
 
-	v4l2_ctrl_handler_free(mira016->sd.ctrl_handler);
-
+	/*
+	 * Unregister first, free the controls last: the subdev state lock is the
+	 * control handler's lock (see probe), and the bridge can still call into
+	 * the subdev until it is unregistered (issue #2).
+	 */
 	v4l2_async_unregister_subdev(sd);
 	v4l2_subdev_cleanup(&mira016->sd);
 	media_entity_cleanup(&sd->entity);
+	v4l2_ctrl_handler_free(mira016->sd.ctrl_handler);
 
 	pm_runtime_disable(&client->dev);
 	if (!pm_runtime_status_suspended(&client->dev)) {
