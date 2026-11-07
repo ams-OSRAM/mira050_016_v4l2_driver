@@ -33,7 +33,7 @@
 		target = <&cam1_reg>;
 		cam_reg: __overlay__ {
 			startup-delay-us = <120000>;
-			off-on-delay-us = <40000>;
+			off-on-delay-us = <500000>;	/* full power-down before re-enable: 140 ms still failed 1 in ~235 reopens (issue #3) */
 		};
 	};
 
