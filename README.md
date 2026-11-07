@@ -97,3 +97,39 @@ If that fails on a __monochrome__ Mira050, use `dtoverlay=mira050,mono` instead.
 Mira016 is always monochrome and needs no option.
 
 Finally, run `sudo reboot` to test your changes.
+
+## Contexts and register access
+
+The Mira050 and Mira016 register map has two banks (`BANK_SEL`). Bank 1 holds the context
+registers, once per context: A and B on the Mira050, A to D on the Mira016 (`RW_CONTEXT`). The
+driver selects the bank and context for every access and returns to bank 0 / context A afterwards.
+It writes the ROI and row length to every context, and exposure and frame time to the contexts
+chosen with `controls_context`.
+
+The driver has these controls on the sensor sub-device (`v4l2-ctl -d /dev/v4l-subdevN -l`):
+
+| Control | |
+|---------|-|
+| `context` | the context the sensor switches to (`NEXT_ACTIVE_CONTEXT`) |
+| `current_context` | the context in use (`CURRENT_ACTIVE_CONTEXT`), read-only, while streaming |
+| `auto_context_switch`, `auto_switch_to_context` | automatic context switching (`EN_AUTO_CNTXT_SWITCH`, `AUTO_SWITCHTO_CNTXT`) |
+| `controls_context` | where exposure and frame time go: `All` (default) or one context |
+| `register_address`, `register_width` (1-4 bytes), `register_bank`, `register_context` | the register for the next access |
+| `register_value` | reading it reads the register, setting it writes it (big-endian) |
+
+Register access runs under the driver's lock, so it does not interfere with the driver's own
+register writes, and only works while the sensor streams (`EBUSY` otherwise). Set the address,
+width, bank and context before the value, or list them before it in the same call:
+
+```
+v4l2-ctl -d /dev/v4l-subdev2 -c register_address=0x000e,register_width=4,register_bank=1,register_context=1
+v4l2-ctl -d /dev/v4l-subdev2 -C register_value
+v4l2-ctl -d /dev/v4l-subdev2 -c register_value=5000
+```
+
+Registers at offsets `0x000`-`0x005` of each block (`BANK_SEL`, `RW_CONTEXT`, ...) are bankless and
+ignore bank and context. The driver does not know about values written this way and may overwrite
+them at the next stream start or exposure change.
+
+The control IDs start at `V4L2_CID_USER_BASE + 0x2000`; see `MIRA_CID_*` in `mira050.c`. The web UI
+of [ams_rpi_viewer](https://github.com/ams-OSRAM/mira_rpi_viewer) uses them in its Registers tab.

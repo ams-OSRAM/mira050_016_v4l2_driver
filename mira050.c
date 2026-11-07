@@ -38,6 +38,38 @@
 #define MIRA016_DISABLE_CONTEXTSYNC	BIT(0)
 #define MIRA016_CMD_REQ_1_REG		CCI_REG8(0x000a)
 #define MIRA016_CMD_HALT_BLOCK_REG	CCI_REG8(0x000c)
+#define MIRA016_EN_AUTO_CNTXT_SWITCH_REG	CCI_REG8(0x0138)
+
+/*
+ * Register organisation (see the core2 register maps and the datasheet):
+ *
+ * - Registers at offsets 0x000-0x005 of each block (BANK_SEL, RW_CONTEXT, ...)
+ *   are bankless.
+ * - All other addresses exist in bank 0 and in bank 1, selected with
+ *   BANK_SEL. Bank 0 holds the registers without context.
+ * - Bank 1 holds the context registers. The sensor has one copy of them per
+ *   context (Mira050: A and B, Mira016: A to D), selected with RW_CONTEXT.
+ *
+ * The driver selects the bank and context before every access to a banked
+ * register and selects bank 0 and context 0 again afterwards.
+ */
+#define MIRA016_BANKLESS_REGS		0x006
+
+/*
+ * Driver specific controls. The register access controls are shared with the
+ * Mira220 driver, so tools can use the same IDs for every Mira sensor.
+ */
+#define MIRA_CID_BASE			(V4L2_CID_USER_BASE + 0x2000)
+#define MIRA_CID_CONTEXT		(MIRA_CID_BASE + 0)
+#define MIRA_CID_CURRENT_CONTEXT	(MIRA_CID_BASE + 1)
+#define MIRA_CID_AUTO_CONTEXT_SWITCH	(MIRA_CID_BASE + 2)
+#define MIRA_CID_AUTO_SWITCH_CONTEXT	(MIRA_CID_BASE + 3)
+#define MIRA_CID_CONTROLS_CONTEXT	(MIRA_CID_BASE + 4)
+#define MIRA_CID_REG_ADDRESS		(MIRA_CID_BASE + 8)
+#define MIRA_CID_REG_BANK		(MIRA_CID_BASE + 9)
+#define MIRA_CID_REG_CONTEXT		(MIRA_CID_BASE + 10)
+#define MIRA_CID_REG_WIDTH		(MIRA_CID_BASE + 11)
+#define MIRA_CID_REG_VALUE		(MIRA_CID_BASE + 12)
 
 /* Chip id */
 #define MIRA016_CHIP_ID_REG		CCI_REG8(0x011B)
@@ -304,6 +336,7 @@ struct mira016_info {
 		u32 dpath_bitwidth_b;
 	} reg_quirks;
 	unsigned int ywin_ena;
+	unsigned int num_contexts;
 	unsigned int mipi_data_fifo_threshold;
 	const struct v4l2_rect native;
 	const struct v4l2_rect bounds;
@@ -339,6 +372,17 @@ struct mira016 {
 	struct v4l2_ctrl *exposure;
 	struct v4l2_ctrl *gain;
 	struct v4l2_ctrl *prate;
+
+	/* Contexts. */
+	struct v4l2_ctrl *controls_context;
+
+	/* Register access. */
+	struct v4l2_ctrl *reg_address;
+	struct v4l2_ctrl *reg_bank;
+	struct v4l2_ctrl *reg_context;
+	struct v4l2_ctrl *reg_width;
+	/* Set while the controls are applied at stream start. */
+	bool ctrl_setup;
 
 	struct {
 		u8 n;
@@ -386,6 +430,36 @@ static inline struct mira016 *to_mira016(struct v4l2_subdev *sd)
 {
 	return container_of_const(sd, struct mira016, sd);
 }
+
+/* Select a bank and a context for the following register accesses. */
+static void mira016_select(struct mira016 *mira016, unsigned int bank,
+			   unsigned int context, int *err)
+{
+	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, context, err);
+	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, bank, err);
+}
+
+/*
+ * The contexts that the per-context controls (exposure, frame duration) are
+ * written to: all contexts, or the one selected with "Controls Context".
+ */
+static unsigned int mira016_first_controls_context(struct mira016 *mira016)
+{
+	unsigned int sel = mira016->controls_context->val;
+
+	return sel ? sel - 1 : 0;
+}
+
+static unsigned int mira016_last_controls_context(struct mira016 *mira016)
+{
+	unsigned int sel = mira016->controls_context->val;
+
+	return sel ? sel - 1 : mira016->info->num_contexts - 1;
+}
+
+#define for_each_controls_context(mira016, ctx)				\
+	for (ctx = mira016_first_controls_context(mira016);		\
+	     ctx <= mira016_last_controls_context(mira016); ++ctx)
 
 /*
  * All Mira016 timing registers are expressed in useconds, while V4L2
@@ -2985,6 +3059,7 @@ static const struct mira016_info mira016_info = {
 		.dpath_bitwidth_b = MIRA016_DPATH_BITWIDTH_B_REG,
 	},
 	.ywin_ena = 2,
+	.num_contexts = 4,
 	.native = {
 		.top = 0,
 		.left = 0,
@@ -3048,6 +3123,7 @@ static const struct mira016_info mira050_info = {
 		.dpath_bitwidth_b = MIRA050_DPATH_BITWIDTH_B_REG,
 	},
 	.ywin_ena = 1,
+	.num_contexts = 2,
 	.mipi_data_fifo_threshold = 0x48,
 	.native = {
 		.top = 0,
@@ -3484,17 +3560,14 @@ static int mira016_configure_vertical_roi(struct mira016 *mira016,
 	 * Sensor model.
 	 */
 
-	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 0, &ret);
-	cci_write(mira016->regmap, MIRA016_YWIN_ENA_REG,
-		  mira016->info->ywin_ena, &ret);
-	cci_write(mira016->regmap, MIRA016_YBINNING_REG, 0x00, &ret);
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_YWIN_ENA_REG,
-		  mira016->info->ywin_ena, &ret);
-	cci_write(mira016->regmap, MIRA016_YBINNING_REG, 0x00, &ret);
+	for (unsigned int ctx = 0; ctx < mira016->info->num_contexts; ++ctx) {
+		mira016_select(mira016, 1, ctx, &ret);
+		cci_write(mira016->regmap, MIRA016_YWIN_ENA_REG,
+			  mira016->info->ywin_ena, &ret);
+		cci_write(mira016->regmap, MIRA016_YBINNING_REG, 0x00, &ret);
+	}
 
-	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 0, &ret);
+	mira016_select(mira016, 0, 0, &ret);
 	cci_write(mira016->regmap, MIRA016_YWIN_BLACK_REG, 0x00, &ret);
 	cci_write(mira016->regmap, MIRA016_YWIN_DIR_REG,
 		  mira016->vflip->val, &ret);
@@ -3526,46 +3599,31 @@ static int mira016_configure_roi(struct mira016 *mira016,
 {
 	int ret = 0;
 
-	/*
-	 * Write horizontal configuration to context 0 first, then repeat for
-	 * context 1.
-	 */
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 0, &ret);
-	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 1, &ret);
-	if (ret)
-		return ret;
+	/* The ROI is the same in all contexts. */
+	for (unsigned int ctx = 0; ctx < mira016->info->num_contexts; ++ctx) {
+		mira016_select(mira016, 1, ctx, &ret);
+		if (ret)
+			return ret;
 
-	ret = mira016_configure_horizontal_roi(mira016, state);
-	if (ret)
-		return ret;
+		ret = mira016_configure_horizontal_roi(mira016, state);
+		if (ret)
+			return ret;
+	}
 
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 1, &ret);
-	if (ret)
-		return ret;
-
-	ret = mira016_configure_horizontal_roi(mira016, state);
-	if (ret)
-		return ret;
-
-	ret = mira016_configure_vertical_roi(mira016, state);
-	if (ret)
-		return ret;
-
-	return 0;
+	return mira016_configure_vertical_roi(mira016, state);
 }
 
 static int mira016_configure_row_length(struct mira016 *mira016)
 {
 	int ret = 0;
 
-	/* Configure ROW_LENGTH in both contexts. */
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 0, &ret);
-	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_ROW_TIMINGS_REG,
-		  mira016->timings.row_length, &ret);
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_ROW_TIMINGS_REG,
-		  mira016->timings.row_length, &ret);
+	/* The row length is the same in all contexts. */
+	for (unsigned int ctx = 0; ctx < mira016->info->num_contexts; ++ctx) {
+		mira016_select(mira016, 1, ctx, &ret);
+		cci_write(mira016->regmap, MIRA016_ROW_TIMINGS_REG,
+			  mira016->timings.row_length, &ret);
+	}
+	mira016_select(mira016, 0, 0, &ret);
 
 	return ret;
 }
@@ -3676,8 +3734,11 @@ static int mira016_enable_streams(struct v4l2_subdev *sd,
 		ret = mira016_configure_roi(mira016, state);
 	if (!ret)
 		ret = mira016_configure_row_length(mira016);
-	if (!ret)
+	if (!ret) {
+		mira016->ctrl_setup = true;
 		ret = __v4l2_ctrl_handler_setup(mira016->sd.ctrl_handler);
+		mira016->ctrl_setup = false;
+	}
 	if (!ret)
 		ret = mira016_start_streaming(mira016);
 	if (ret)
@@ -3761,18 +3822,18 @@ static const struct v4l2_subdev_internal_ops mira016_internal_ops = {
 static int mira016_write_exposure_reg(struct mira016 *mira016,
 				      u32 exposure_lines)
 {
+	unsigned int ctx;
 	u32 exposure_us;
 	int ret = 0;
 
 	exposure_us = mira016_lines_to_usec(mira016, exposure_lines);
 
-	/* Write Bank 1 context 0 and context 1 */
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 0, &ret);
-	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_EXP_TIME_L_REG, exposure_us, &ret);
-
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_EXP_TIME_L_REG, exposure_us, &ret);
+	for_each_controls_context(mira016, ctx) {
+		mira016_select(mira016, 1, ctx, &ret);
+		cci_write(mira016->regmap, MIRA016_EXP_TIME_L_REG, exposure_us,
+			  &ret);
+	}
+	mira016_select(mira016, 0, 0, &ret);
 
 	return ret;
 }
@@ -3782,23 +3843,20 @@ static int mira016_write_frame_duration_reg(struct mira016 *mira016,
 					    u32 vblank_lines)
 {
 	struct v4l2_rect *crop = v4l2_subdev_state_get_crop(state, 0);
+	unsigned int ctx;
 	u32 frame_duration;
 	int ret = 0;
 
 	frame_duration = mira016_lines_to_usec(mira016,
 					       crop->height + vblank_lines);
 
-	/* Write Bank 1 context 0 and context 1 */
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 0, &ret);
-	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_NUM_FRAMES_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_TARGET_FRAME_TIME_REG,
-		  frame_duration, &ret);
-
-	cci_write(mira016->regmap, MIRA016_RW_CONTEXT_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_NUM_FRAMES_REG, 1, &ret);
-	cci_write(mira016->regmap, MIRA016_TARGET_FRAME_TIME_REG,
-		  frame_duration, &ret);
+	for_each_controls_context(mira016, ctx) {
+		mira016_select(mira016, 1, ctx, &ret);
+		cci_write(mira016->regmap, MIRA016_NUM_FRAMES_REG, 1, &ret);
+		cci_write(mira016->regmap, MIRA016_TARGET_FRAME_TIME_REG,
+			  frame_duration, &ret);
+	}
+	mira016_select(mira016, 0, 0, &ret);
 
 	return ret;
 }
@@ -3902,6 +3960,70 @@ static int mira016_write_analogue_gain(struct mira016 *mira016,
 	return ret;
 }
 
+/*
+ * Read or write the register selected with the register access controls.
+ * Runs under the control handler lock, which is also the lock of the subdev
+ * state, so it cannot interleave with the driver's own register accesses.
+ */
+static int mira016_reg_access(struct mira016 *mira016, bool write, s64 *val)
+{
+	u32 address = mira016->reg_address->cur.val;
+	u32 width = mira016->reg_width->cur.val;
+	bool banked = (address & 0x0fff) >= MIRA016_BANKLESS_REGS;
+	u32 reg = address | (width << CCI_REG_WIDTH_SHIFT);
+	int ret = 0;
+	u64 v;
+
+	if (address + width - 1 > 0xffff)
+		return -EINVAL;
+	if (write && (*val < 0 || (u64)*val >= BIT_ULL(8 * width)))
+		return -ERANGE;
+
+	/* The registers only hold their values while the sensor streams. */
+	if (!pm_runtime_get_if_in_use(mira016->dev))
+		return -EBUSY;
+
+	if (banked)
+		mira016_select(mira016, mira016->reg_bank->cur.val,
+			       mira016->reg_context->cur.val, &ret);
+	if (write) {
+		cci_write(mira016->regmap, reg, *val, &ret);
+	} else {
+		cci_read(mira016->regmap, reg, &v, &ret);
+		if (!ret)
+			*val = v;
+	}
+	if (banked)
+		mira016_select(mira016, 0, 0, &ret);
+
+	pm_runtime_put_autosuspend(mira016->dev);
+
+	return ret;
+}
+
+static int mira016_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct mira016 *mira016 =
+		container_of(ctrl->handler, struct mira016, ctrl_handler);
+	int ret = 0;
+	u64 val;
+
+	switch (ctrl->id) {
+	case MIRA_CID_REG_VALUE:
+		return mira016_reg_access(mira016, false, ctrl->p_new.p_s64);
+	case MIRA_CID_CURRENT_CONTEXT:
+		if (!pm_runtime_get_if_in_use(mira016->dev))
+			return -EBUSY;
+		cci_read(mira016->regmap, MIRA016_ACTIVE_CONTEXT_REG, &val, &ret);
+		pm_runtime_put_autosuspend(mira016->dev);
+		if (!ret)
+			ctrl->val = val;
+		return ret;
+	}
+
+	return -EINVAL;
+}
+
 static int mira016_set_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct mira016 *mira016 =
@@ -3911,6 +4033,21 @@ static int mira016_set_ctrl(struct v4l2_ctrl *ctrl)
 	struct v4l2_subdev_state *state;
 	struct v4l2_rect *crop;
 	int ret = 0;
+
+	switch (ctrl->id) {
+	case MIRA_CID_REG_ADDRESS:
+	case MIRA_CID_REG_BANK:
+	case MIRA_CID_REG_CONTEXT:
+	case MIRA_CID_REG_WIDTH:
+	case MIRA_CID_CONTROLS_CONTEXT:
+		/* Used by the next register access or control write. */
+		return 0;
+	case MIRA_CID_REG_VALUE:
+		/* Never replay a register write at stream start. */
+		if (mira016->ctrl_setup)
+			return 0;
+		return mira016_reg_access(mira016, true, ctrl->p_new.p_s64);
+	}
 
 	state = v4l2_subdev_get_locked_active_state(&mira016->sd);
 	format = v4l2_subdev_state_get_format(state, 0);
@@ -3948,6 +4085,19 @@ static int mira016_set_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_ANALOGUE_GAIN:
 		ret = mira016_write_analogue_gain(mira016, state, ctrl->val);
 		break;
+	case MIRA_CID_CONTEXT:
+		cci_write(mira016->regmap, MIRA016_NEXT_ACTIVE_CONTEXT_REG,
+			  ctrl->val, &ret);
+		break;
+	case MIRA_CID_AUTO_SWITCH_CONTEXT:
+		cci_write(mira016->regmap, MIRA016_AUTO_SWITCH_CONTEXT_REG,
+			  ctrl->val, &ret);
+		break;
+	case MIRA_CID_AUTO_CONTEXT_SWITCH:
+		mira016_select(mira016, 0, 0, &ret);
+		cci_write(mira016->regmap, MIRA016_EN_AUTO_CNTXT_SWITCH_REG,
+			  ctrl->val, &ret);
+		break;
 	default:
 		ret = -EINVAL;
 		break;
@@ -3959,8 +4109,134 @@ static int mira016_set_ctrl(struct v4l2_ctrl *ctrl)
 }
 
 static const struct v4l2_ctrl_ops mira016_ctrl_ops = {
+	.g_volatile_ctrl = mira016_g_volatile_ctrl,
 	.s_ctrl = mira016_set_ctrl,
 };
+
+static const char * const mira016_context_menu[] = {
+	"A", "B", "C", "D",
+};
+
+static const char * const mira016_controls_context_menu[] = {
+	"All", "A", "B", "C", "D",
+};
+
+static const char * const mira016_bank_menu[] = {
+	"Bank 0", "Bank 1",
+};
+
+/* Add the context and register access controls. */
+static void mira016_init_custom_controls(struct mira016 *mira016)
+{
+	struct v4l2_ctrl_handler *hdlr = &mira016->ctrl_handler;
+	unsigned int last_ctx = mira016->info->num_contexts - 1;
+	struct v4l2_ctrl_config cfg;
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_CONTEXT,
+		.name = "Context",
+		.type = V4L2_CTRL_TYPE_MENU,
+		.max = last_ctx,
+		.qmenu = mira016_context_menu,
+	};
+	v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_CURRENT_CONTEXT,
+		.name = "Current Context",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.max = last_ctx,
+		.step = 1,
+		.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
+	};
+	v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_AUTO_CONTEXT_SWITCH,
+		.name = "Auto Context Switch",
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.max = 1,
+		.step = 1,
+	};
+	v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_AUTO_SWITCH_CONTEXT,
+		.name = "Auto Switch To Context",
+		.type = V4L2_CTRL_TYPE_MENU,
+		.max = last_ctx,
+		.qmenu = mira016_context_menu,
+	};
+	v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_CONTROLS_CONTEXT,
+		.name = "Controls Context",
+		.type = V4L2_CTRL_TYPE_MENU,
+		.max = last_ctx + 1,
+		.qmenu = mira016_controls_context_menu,
+	};
+	mira016->controls_context = v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_REG_ADDRESS,
+		.name = "Register Address",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.max = 0xffff,
+		.step = 1,
+	};
+	mira016->reg_address = v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_REG_BANK,
+		.name = "Register Bank",
+		.type = V4L2_CTRL_TYPE_MENU,
+		.max = 1,
+		.qmenu = mira016_bank_menu,
+	};
+	mira016->reg_bank = v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_REG_CONTEXT,
+		.name = "Register Context",
+		.type = V4L2_CTRL_TYPE_MENU,
+		.max = last_ctx,
+		.qmenu = mira016_context_menu,
+	};
+	mira016->reg_context = v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_REG_WIDTH,
+		.name = "Register Width",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.min = 1,
+		.max = 4,
+		.step = 1,
+		.def = 1,
+	};
+	mira016->reg_width = v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+
+	cfg = (struct v4l2_ctrl_config) {
+		.ops = &mira016_ctrl_ops,
+		.id = MIRA_CID_REG_VALUE,
+		.name = "Register Value",
+		.type = V4L2_CTRL_TYPE_INTEGER64,
+		.max = U32_MAX,
+		.step = 1,
+		.flags = V4L2_CTRL_FLAG_VOLATILE |
+			 V4L2_CTRL_FLAG_EXECUTE_ON_WRITE,
+	};
+	v4l2_ctrl_new_custom(hdlr, &cfg, NULL);
+}
 
 static int mira016_identify_module(struct mira016 *mira016)
 {
@@ -4301,7 +4577,7 @@ static int mira016_init_controls(struct mira016 *mira016)
 		return ret;
 
 	ctrl_hdlr = &mira016->ctrl_handler;
-	v4l2_ctrl_handler_init(ctrl_hdlr, 12);
+	v4l2_ctrl_handler_init(ctrl_hdlr, 21);
 
 	/* By default, PIXEL_RATE is read only */
 	pixel_rate = mira016_calc_prate(mira016, MIRA016_PIXEL_ARRAY_WIDTH);
@@ -4355,6 +4631,8 @@ static int mira016_init_controls(struct mira016 *mira016)
 
 	v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &mira016_ctrl_ops,
 					&props);
+
+	mira016_init_custom_controls(mira016);
 
 	if (ctrl_hdlr->error)
 		goto error;
