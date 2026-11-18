@@ -144,6 +144,15 @@
 #define MIRA016_GDIG_PREAMP_UNITY	15
 #define MIRA016_BIAS_RG_ADCGAIN		CCI_REG8(0x01f0)
 #define MIRA016_BIAS_RG_MULT		CCI_REG8(0x01f3)
+#define MIRA016_RG_ADCGAIN_MAX		63
+
+/*
+ * Analogue gain control, in thousandths: 1000 is 1x. Fine gain up to 16x in
+ * 8-bit modes and 4x in 10-bit modes; 12-bit modes stay at 1x.
+ */
+#define MIRA016_GAIN_UNITY		1000
+#define MIRA016_GAIN_MAX_8B		(16 * MIRA016_GAIN_UNITY)
+#define MIRA016_GAIN_MAX_10B		(4 * MIRA016_GAIN_UNITY)
 
 /* Offset clipping. */
 #define MIRA016_OFFSET_CLIPPING_REG    CCI_REG16(0x0193)
@@ -253,8 +262,7 @@ static unsigned int mira016_fmt_to_bpp(unsigned int code)
 	return 8;
 }
 
-struct mira016_gain_lut {
-	u32 gain_256;
+struct mira016_gain_regs {
 	u8 gdig_preamp;
 	u8 rg_adcgain;
 	u8 rg_mult;
@@ -287,14 +295,8 @@ struct mira016_info {
 		const struct cci_reg_sequence *sequence;
 		size_t num_regs;
 	} gain_init_12b;
-	const struct {
-		const struct mira016_gain_lut *lut;
-		size_t max_gain;
-	} gain_lut_8b;
-	const struct {
-		const struct mira016_gain_lut *lut;
-		size_t max_gain;
-	} gain_lut_10b;
+	/* RG_MULT value for the 1x coarse analogue gain step. */
+	u8 rg_mult_1x;
 	const struct {
 		const struct mira016_adc_timings adc_timings_8b_fine;
 		const struct mira016_adc_timings adc_timings_10b_fine;
@@ -2830,118 +2832,6 @@ static const struct cci_reg_sequence mira050_init_sequence[] = {
 	{ CCI_REG8(0x001D), 0x0 },
 };
 
-/* Table 29: Lookup table for fine analog gain in 10-bit mode */
-static const struct mira016_gain_lut mira016_gain_lut_10bit[] = {
-	{ 256, 15, 36, 2 }, { 261, 15, 35, 2 }, { 270, 15, 33, 2 },
-	{ 275, 15, 32, 2 }, { 286, 15, 30, 2 }, { 292, 15, 29, 2 },
-	{ 304, 15, 27, 2 }, { 310, 15, 26, 2 }, { 324, 15, 24, 2 },
-	{ 332, 15, 23, 2 }, { 339, 15, 22, 2 }, { 352, 15, 62, 1 },
-	{ 365, 15, 59, 1 }, { 374, 15, 57, 1 }, { 384, 15, 55, 1 },
-	{ 394, 15, 53, 1 }, { 405, 15, 51, 1 }, { 423, 15, 48, 1 },
-	{ 436, 15, 46, 1 }, { 442, 15, 45, 1 }, { 456, 15, 43, 1 },
-	{ 471, 15, 41, 1 }, { 486, 15, 39, 1 }, { 503, 15, 37, 1 },
-	{ 512, 15, 36, 1 }, { 531, 15, 34, 1 }, { 551, 15, 32, 1 },
-	{ 561, 15, 31, 1 }, { 584, 15, 29, 1 }, { 596, 15, 28, 1 },
-	{ 621, 15, 26, 1 }, { 634, 15, 25, 1 }, { 649, 15, 24, 1 },
-	{ 679, 15, 22, 1 }, { 695, 15, 63, 0 }, { 712, 15, 61, 0 },
-	{ 739, 15, 58, 0 }, { 758, 15, 56, 0 }, { 778, 15, 54, 0 },
-	{ 811, 15, 51, 0 }, { 834, 15, 49, 0 }, { 858, 15, 47, 0 },
-	{ 884, 15, 45, 0 }, { 912, 15, 42, 0 }, { 926, 15, 41, 0 },
-	{ 957, 15, 39, 0 }, { 989, 15, 37, 0 }, { 1024,15, 35, 0 },
-};
-
-/* Table 26: Lookup table for fine analog gain in 8-bit mode */
-static const struct mira016_gain_lut mira016_gain_lut_8bit[] = {
-	{ 256, 3, 36, 2 }, { 261, 3, 35, 2 }, { 270, 3, 33, 2 },
-	{ 275, 3, 32, 2 }, { 286, 3, 30, 2 }, { 292, 3, 29, 2 },
-	{ 304, 3, 28, 2 }, { 310, 3, 26, 2 }, { 324, 3, 27, 2 },
-	{ 332, 3, 25, 2 }, { 339, 3, 23, 2 }, { 352, 3, 22, 2 },
-	{ 365, 3, 22, 2 }, { 374, 3, 22, 2 }, { 384, 3, 55, 1 },
-	{ 394, 3, 54, 1 }, { 405, 3, 52, 1 }, { 423, 3, 51, 1 },
-	{ 436, 3, 49, 1 }, { 442, 3, 47, 1 }, { 456, 3, 44, 1 },
-	{ 471, 3, 43, 1 }, { 486, 3, 42, 1 }, { 503, 3, 40, 1 },
-	{ 512, 3, 39, 1 }, { 531, 3, 37, 1 }, { 551, 3, 35, 1 },
-	{ 561, 3, 32, 1 }, { 584, 3, 31, 1 }, { 596, 3, 29, 1 },
-	{ 621, 3, 28, 1 }, { 634, 3, 27, 1 }, { 649, 3, 26, 1 },
-	{ 679, 3, 24, 1 }, { 695, 3, 23, 1 }, { 712, 3, 22, 1 },
-	{ 739, 3, 61, 0 }, { 758, 3, 58, 0 }, { 778, 3, 57, 0 },
-	{ 811, 3, 55, 0 }, { 834, 3, 53, 0 }, { 858, 3, 49, 0 },
-	{ 884, 3, 47, 0 }, { 912, 3, 45, 0 }, { 926, 3, 42, 0 },
-	{ 957, 3, 40, 0 }, { 989, 7, 39, 1 }, { 1024, 7, 36, 1 },
-	{ 1042, 7, 35, 1 }, { 1081, 7, 33, 1 }, { 1101, 7, 32, 1 },
-	{ 1144, 7, 30, 1 }, { 1167, 7, 28, 1 }, { 1216, 7, 27, 1 },
-	{ 1242, 7, 25, 1 }, { 1297, 7, 24, 1 }, { 1327, 7, 22, 1 },
-	{ 1357, 7, 60, 0 }, { 1406, 7, 58, 0 }, { 1459, 7, 55, 0 },
-	{ 1497, 7, 52, 0 }, { 1536, 7, 51, 0 }, { 1599, 7, 48, 0 },
-	{ 1644, 7, 47, 0 }, { 1692, 7, 45, 0 }, { 1742, 7, 43, 0 },
-	{ 1796, 7, 41, 0 }, { 1853, 7, 40, 0 }, { 1883, 15, 38, 1 },
-	{ 1946, 15, 36, 1 }, { 2013, 15, 35, 1 }, { 2085, 15, 34, 1 },
-	{ 2122, 15, 32, 1 }, { 2203, 15, 31, 1 }, { 2245, 15, 30, 1 },
-	{ 2335, 15, 29, 1 }, { 2382, 15, 27, 1 }, { 2484, 15, 26, 1 },
-	{ 2538, 15, 25, 1 }, { 2594, 15, 23, 1 }, { 2715, 15, 21, 1 },
-	{ 2779, 15, 61, 0 }, { 2882, 15, 59, 0 }, { 2955, 15, 57, 0 },
-	{ 3032, 15, 56, 0 }, { 3155, 15, 53, 0 }, { 3243, 15, 51, 0 },
-	{ 3335, 15, 49, 0 }, { 3433, 15, 47, 0 }, { 3537, 15, 45, 0 },
-	{ 3648, 15, 44, 0 }, { 3766, 15, 42, 0 }, { 3827, 15, 41, 0 },
-	{ 3957, 15, 39, 0 }, { 4096, 15, 37, 0 },
-};
-
-/* Table 29: Lookup table for fine analog gain in 10-bit mode */
-static const struct mira016_gain_lut mira050_gain_lut_10bit[] = {
-	{ 256, 15, 36, 3 }, { 261, 15, 35, 3 }, { 270, 15, 33, 3 },
-	{ 275, 15, 32, 3 }, { 286, 15, 30, 3 }, { 292, 15, 29, 3 },
-	{ 304, 15, 27, 3 }, { 310, 15, 26, 3 }, { 324, 15, 24, 3 },
-	{ 332, 15, 23, 3 }, { 339, 15, 22, 3 }, { 352, 15, 62, 2 },
-	{ 365, 15, 59, 2 }, { 374, 15, 57, 2 }, { 384, 15, 55, 2 },
-	{ 394, 15, 53, 2 }, { 405, 15, 51, 2 }, { 423, 15, 48, 2 },
-	{ 436, 15, 46, 2 }, { 442, 15, 45, 2 }, { 456, 15, 43, 2 },
-	{ 471, 15, 41, 2 }, { 486, 15, 39, 2 }, { 503, 15, 37, 2 },
-	{ 512, 15, 36, 2 }, { 531, 15, 34, 2 }, { 551, 15, 32, 2 },
-	{ 561, 15, 31, 2 }, { 584, 15, 29, 2 }, { 596, 15, 28, 2 },
-	{ 621, 15, 26, 2 }, { 634, 15, 25, 2 }, { 649, 15, 24, 2 },
-	{ 679, 15, 22, 2 }, { 695, 15, 63, 1 }, { 712, 15, 61, 1 },
-	{ 739, 15, 58, 1 }, { 758, 15, 56, 1 }, { 778, 15, 54, 1 },
-	{ 811, 15, 51, 1 }, { 834, 15, 49, 1 }, { 858, 15, 47, 1 },
-	{ 884, 15, 45, 1 }, { 912, 15, 43, 1 }, { 926, 15, 42, 1 },
-	{ 957, 15, 40, 1 }, { 989, 15, 38, 1 }, { 1024,15, 36, 1 },
-};
-
-/* Table 26: Lookup table for fine analog gain in 8-bit mode */
-static const struct mira016_gain_lut mira050_gain_lut_8bit[] = {
-	{ 256, 3, 36, 3 }, { 261, 3, 35, 3 }, { 270, 3, 33, 3 },
-	{ 275, 3, 32, 3 }, { 286, 3, 30, 3 }, { 292, 3, 29, 3 },
-	{ 304, 3, 27, 3 }, { 310, 3, 26, 3 }, { 324, 3, 24, 3 },
-	{ 332, 3, 23, 3 }, { 339, 3, 22, 3 }, { 352, 3, 62, 2 },
-	{ 365, 3, 59, 2 }, { 374, 3, 57, 2 }, { 384, 3, 55, 2 },
-	{ 394, 3, 53, 2 }, { 405, 3, 51, 2 }, { 423, 3, 48, 2 },
-	{ 436, 3, 46, 2 }, { 442, 3, 45, 2 }, { 456, 3, 43, 2 },
-	{ 471, 3, 41, 2 }, { 486, 3, 39, 2 }, { 503, 3, 37, 2 },
-	{ 512, 3, 36, 2 }, { 531, 3, 34, 2 }, { 551, 3, 32, 2 },
-	{ 561, 3, 31, 2 }, { 584, 3, 29, 2 }, { 596, 3, 28, 2 },
-	{ 621, 3, 26, 2 }, { 634, 3, 25, 2 }, { 649, 3, 24, 2 },
-	{ 679, 3, 22, 2 }, { 695, 3, 63, 1 }, { 712, 3, 61, 1 },
-	{ 739, 3, 58, 1 }, { 758, 3, 56, 1 }, { 778, 3, 54, 1 },
-	{ 811, 3, 51, 1 }, { 834, 3, 49, 1 }, { 858, 3, 47, 1 },
-	{ 884, 3, 45, 1 }, { 912, 3, 43, 1 }, { 926, 3, 42, 1 },
-	{ 957, 3, 40, 1 }, { 989, 3, 38, 1 }, { 1024, 7, 36, 2 },
-	{ 1042, 7, 35, 2 }, { 1081, 7, 33, 2 }, { 1101, 7, 32, 2 },
-	{ 1144, 7, 30, 2 }, { 1167, 7, 29, 2 }, { 1216, 7, 27, 2 },
-	{ 1242, 7, 26, 2 }, { 1297, 7, 24, 2 }, { 1327, 7, 23, 2 },
-	{ 1357, 7, 22, 2 }, { 1406, 7, 62, 1 }, { 1459, 7, 59, 1 },
-	{ 1497, 7, 57, 1 }, { 1536, 7, 55, 1 }, { 1599, 7, 52, 1 },
-	{ 1644, 7, 50, 1 }, { 1692, 7, 48, 1 }, { 1742, 7, 46, 1 },
-	{ 1796, 7, 44, 1 }, { 1853, 7, 42, 1 }, { 1883, 7, 41, 1 },
-	{ 1946, 7, 39, 1 }, { 2013, 7, 37, 1 }, { 2085, 15, 35, 2 },
-	{ 2122, 15, 34, 2 }, { 2203, 15, 32, 2 }, { 2245, 15, 31, 2 },
-	{ 2335, 15, 29, 2 }, { 2382, 15, 28, 2 }, { 2484, 15, 26, 2 },
-	{ 2538, 15, 25, 2 }, { 2594, 15, 24, 2 }, { 2715, 15, 22, 2 },
-	{ 2779, 15, 63, 1 }, { 2882, 15, 60, 1 }, { 2955, 15, 58, 1 },
-	{ 3032, 15, 56, 1 }, { 3155, 15, 53, 1 }, { 3243, 15, 51, 1 },
-	{ 3335, 15, 49, 1 }, { 3433, 15, 47, 1 }, { 3537, 15, 45, 1 },
-	{ 3648, 15, 43, 1 }, { 3766, 15, 41, 1 }, { 3827, 15, 40, 1 },
-	{ 3957, 15, 38, 1 }, { 4096, 15, 36, 1 },
-};
-
 static const struct mira016_info mira016_info = {
 	.supply_names = mira016_supplies,
 	.num_supplies = ARRAY_SIZE(mira016_supplies),
@@ -2961,14 +2851,7 @@ static const struct mira016_info mira016_info = {
 		.sequence = mira016_12b_fixed_gain_init,
 		.num_regs = ARRAY_SIZE(mira016_12b_fixed_gain_init),
 	},
-	.gain_lut_8b = {
-		.lut = mira016_gain_lut_8bit,
-		.max_gain = ARRAY_SIZE(mira016_gain_lut_8bit),
-	},
-	.gain_lut_10b = {
-		.lut = mira016_gain_lut_10bit,
-		.max_gain = ARRAY_SIZE(mira016_gain_lut_10bit),
-	},
+	.rg_mult_1x = 2,
 	.adc_timings = {
 		/* 8b and 10b are "high speed" modes. */
 		.adc_timings_8b_fine = {
@@ -3025,14 +2908,7 @@ static const struct mira016_info mira050_info = {
 		.sequence = mira050_12b_fixed_gain_init,
 		.num_regs = ARRAY_SIZE(mira050_12b_fixed_gain_init),
 	},
-	.gain_lut_8b = {
-		.lut = mira050_gain_lut_8bit,
-		.max_gain = ARRAY_SIZE(mira050_gain_lut_8bit),
-	},
-	.gain_lut_10b = {
-		.lut = mira050_gain_lut_10bit,
-		.max_gain = ARRAY_SIZE(mira050_gain_lut_10bit),
-	},
+	.rg_mult_1x = 3,
 	.adc_timings = {
 		.adc_timings_8b_fine = {
 			.cont = 961,
@@ -3226,10 +3102,10 @@ static int mira016_set_pad_format(struct v4l2_subdev *sd,
 	bpp = mira016_fmt_to_bpp(fmt->format.code);
 	switch (bpp) {
 	case 8:
-		gain_max = mira016->info->gain_lut_8b.max_gain;
+		gain_max = MIRA016_GAIN_MAX_8B;
 		break;
 	case 10:
-		gain_max = mira016->info->gain_lut_10b.max_gain;
+		gain_max = MIRA016_GAIN_MAX_10B;
 		break;
 	case 12:
 	default:
@@ -3238,11 +3114,12 @@ static int mira016_set_pad_format(struct v4l2_subdev *sd,
 		 * changes the line timings while streaming. Only allow 1x
 		 * for the time being.
 		 */
-		gain_max = 1;
+		gain_max = MIRA016_GAIN_UNITY;
 		break;
 	}
 
-	ret = __v4l2_ctrl_modify_range(mira016->gain, 1, gain_max, 1, 1);
+	ret = __v4l2_ctrl_modify_range(mira016->gain, MIRA016_GAIN_UNITY,
+				       gain_max, 1, MIRA016_GAIN_UNITY);
 	if (ret)
 		return ret;
 
@@ -3808,11 +3685,53 @@ static int mira016_write_frame_duration_reg(struct mira016 *mira016,
 	return ret;
 }
 
+/*
+ * Fine analogue gain (8 and 10-bit modes): compute the registers for a gain in
+ * thousandths (1000 is 1x) and return the gain they give, in the same units.
+ *
+ *   gain = 57 * 2^n / (RG_ADCGAIN + 21)
+ *
+ * n is the octave of the gain: the first two octaves above 1x are RG_MULT
+ * steps (k), further octaves are GDIG_PREAMP steps (j, 8-bit mode only, up to
+ * 16x). RG_MULT is rg_mult_1x - k, GDIG_PREAMP is 16 * 2^j / 4 - 1 in 8-bit
+ * mode and 15 (x1) in 10-bit mode. RG_ADCGAIN stays within 21 to 63, and the
+ * gain is set within 1.2 % of the request.
+ *
+ * This is the recipe of the core2 page docs/how-to/set-a-mira-fine-gain.md,
+ * which also lists the resulting registers in 3 % steps. It replaces the gain
+ * tables of the datasheet.
+ */
+static u32 mira016_calc_gain(const struct mira016 *mira016, unsigned int bpp,
+			     u32 gain, struct mira016_gain_regs *regs)
+{
+	u32 max_octave = bpp == 8 ? 4 : 2;
+	u32 n = 0, k, j, num;
+	int adcgain;
+
+	/* Largest octave n with 57 * 2^n <= 84 * gain: RG_ADCGAIN <= 63. */
+	while (n < max_octave && (57000U << (n + 1)) <= 84U * gain)
+		n++;
+	k = min(n, 2U);
+	j = n - k;
+	num = 57000U << n;
+	adcgain = (int)DIV_ROUND_CLOSEST(num, gain) - 21;
+	adcgain = clamp(adcgain, 0, MIRA016_RG_ADCGAIN_MAX);
+
+	regs->rg_adcgain = adcgain;
+	regs->rg_mult = mira016->info->rg_mult_1x - k;
+	regs->gdig_preamp = bpp == 8 ? (16U << j) / 4 - 1
+				     : MIRA016_GDIG_PREAMP_UNITY;
+
+	return DIV_ROUND_CLOSEST(num, adcgain + 21);
+}
+
 static int mira016_write_analogue_gain(struct mira016 *mira016,
 				       struct v4l2_subdev_state *state,
 				       u32 gain)
 {
-	const struct mira016_gain_lut *lut = NULL;
+	struct mira016_gain_regs regs = {
+		.gdig_preamp = MIRA016_GDIG_PREAMP_UNITY,
+	};
 	struct v4l2_mbus_framefmt *format;
 	int32_t offset_clipping;
 	int32_t scaled_offset;
@@ -3820,34 +3739,28 @@ static int mira016_write_analogue_gain(struct mira016 *mira016,
 	u16 dark_offset_100;
 	u16 preamp_gain_inv;
 	u16 scale_factor;
-	u16 analog_gain;
+	int32_t analog_gain;
 	u16 cds_offset;
 	u16 cal_value;
 	int ret = 0;
 	u8 bpp;
 
-	/*
-	 * Use 'gain - 1' as the gain control values are indexed from 1
-	 * while the gain luts are 0-indexed.
-	 */
 	format = v4l2_subdev_state_get_format(state, 0);
 	bpp = mira016_fmt_to_bpp(format->code);
 	switch (bpp) {
 	case 8:
-		lut = &mira016->info->gain_lut_8b.lut[gain - 1];
+		analog_gain = mira016_calc_gain(mira016, bpp, gain, &regs);
 		cal_value = (u32)mira016->otp_data.blc_8bits;
-		preamp_gain_inv = 16 / (lut->gdig_preamp + 1);
-		analog_gain = lut->gain_256;
+		preamp_gain_inv = 16 / (regs.gdig_preamp + 1);
 		target_black_level = 8; // or 8 ?
 		dark_offset_100 = 72;
 		scale_factor = 16;
 		cds_offset = 1540;
 		break;
 	case 10:
-		lut = &mira016->info->gain_lut_10b.lut[gain - 1];
+		analog_gain = mira016_calc_gain(mira016, bpp, gain, &regs);
 		cal_value = (u32)mira016->otp_data.blc_10bits_hs;
-		preamp_gain_inv = 16 / (lut->gdig_preamp + 1);
-		analog_gain = lut->gain_256;
+		preamp_gain_inv = 16 / (regs.gdig_preamp + 1);
 		target_black_level = 32;
 		dark_offset_100 = 291;
 		scale_factor = 4;
@@ -3856,15 +3769,14 @@ static int mira016_write_analogue_gain(struct mira016 *mira016,
 	case 12:
 	default:
 		/*
-		 * 12 bit gain code is fixed, no gain LUT.
+		 * 12 bit gain is fixed at 1x, no fine gain.
 		 *
 		 * TODO: Adjust parameters for other fixed gain values.
 		 */
 		cal_value = (u32)mira016->otp_data.blc_12bits;
 		preamp_gain_inv = 1;
 		target_black_level = 128;
-		/* Scale 1x gain to 256 to match 8 and 10 bits modes */
-		analog_gain = 256;
+		analog_gain = MIRA016_GAIN_UNITY;
 		dark_offset_100 =
 			(mira016->bus_config & V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK)
 			? 1794 : 867;
@@ -3875,21 +3787,20 @@ static int mira016_write_analogue_gain(struct mira016 *mira016,
 
 	/* Program analog gain (for 8 and 10 bits modes only). */
 	cci_write(mira016->regmap, MIRA016_BANK_SEL_REG, 0, &ret);
-	if (lut) {
+	if (bpp != 12) {
 		cci_write(mira016->regmap, MIRA016_BIAS_RG_ADCGAIN,
-			  lut->rg_adcgain, &ret);
+			  regs.rg_adcgain, &ret);
 		cci_write(mira016->regmap, MIRA016_BIAS_RG_MULT,
-			  lut->rg_mult, &ret);
+			  regs.rg_mult, &ret);
 	}
 
 	/*
-	 * Digital preamp: from the LUT in 8-bit mode, 15 (unity) in 10 and
+	 * Digital preamp: from the gain in 8-bit mode, 15 (unity) in 10 and
 	 * 12-bit mode. Write it in every mode: the register keeps its value
 	 * across mode switches, and the 8-bit value (3 or 7) caps the 10 and
 	 * 12-bit output well below full scale.
 	 */
-	cci_write(mira016->regmap, MIRA016_GDIG_PREAMP,
-		  lut ? lut->gdig_preamp : MIRA016_GDIG_PREAMP_UNITY, &ret);
+	cci_write(mira016->regmap, MIRA016_GDIG_PREAMP, regs.gdig_preamp, &ret);
 
 	/*
 	 * Adjust black level offset clipping to the new gain value. Offset
@@ -3901,7 +3812,8 @@ static int mira016_write_analogue_gain(struct mira016 *mira016,
 
 	scaled_offset = (((cal_value + dark_offset_100)
 		      *  analog_gain * preamp_gain_inv
-		      / scale_factor / 256) - dark_offset_100) / 100;
+		      / scale_factor / MIRA016_GAIN_UNITY)
+		      - dark_offset_100) / 100;
 	offset_clipping = max(cds_offset - target_black_level *
 			      preamp_gain_inv + scaled_offset, 0);
 
@@ -3968,7 +3880,31 @@ static int mira016_set_ctrl(struct v4l2_ctrl *ctrl)
 	return ret;
 }
 
+static int mira016_try_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct mira016 *mira016 =
+		container_of(ctrl->handler, struct mira016, ctrl_handler);
+	struct mira016_gain_regs regs;
+	struct v4l2_subdev_state *state;
+	unsigned int bpp;
+
+	if (ctrl->id != V4L2_CID_ANALOGUE_GAIN)
+		return 0;
+
+	state = v4l2_subdev_get_locked_active_state(&mira016->sd);
+	if (!state)
+		return 0;
+
+	/* Round to the gain the sensor gives, so user space reads that back. */
+	bpp = mira016_fmt_to_bpp(v4l2_subdev_state_get_format(state, 0)->code);
+	if (bpp != 12)
+		ctrl->val = mira016_calc_gain(mira016, bpp, ctrl->val, &regs);
+
+	return 0;
+}
+
 static const struct v4l2_ctrl_ops mira016_ctrl_ops = {
+	.try_ctrl = mira016_try_ctrl,
 	.s_ctrl = mira016_set_ctrl,
 };
 
@@ -4349,7 +4285,8 @@ static int mira016_init_controls(struct mira016 *mira016)
 
 	mira016->gain = v4l2_ctrl_new_std(ctrl_hdlr, &mira016_ctrl_ops,
 					  V4L2_CID_ANALOGUE_GAIN,
-					  1, 1, 1, 1);
+					  MIRA016_GAIN_UNITY, MIRA016_GAIN_UNITY,
+					  1, MIRA016_GAIN_UNITY);
 
 	/*
 	 * Changing VFLIP requires re-programming the top point, hence we
